@@ -1,0 +1,17 @@
+matplotlib
+scipy
+scikit-learn
+scikit-image
+pandas
+music21
+black[jupyter]
+click
+flake8
+kaggle
+pydot
+ipywidgets
+tensorflow
+tensorboard
+tensorflow_probability
+flake8-nb
+transformers_utils
