@@ -45,15 +45,15 @@ PARSED_DATA_PATH   = "parsed_data/"
 DATASET_REPETITIONS = 1
 
 SEQ_LEN           = 250
-EMBEDDING_DIM     = 1024
-KEY_DIM           = 512
-N_HEADS           = 8
+EMBEDDING_DIM     = 256
+KEY_DIM           = 256
+N_HEADS           = 5
 DROPOUT_RATE      = 0.3
-FEED_FORWARD_DIM  = 2048
+FEED_FORWARD_DIM  = 256
 LOAD_MODEL        = False
 
 EPOCHS            = 5000
-BATCH_SIZE        = 256
+BATCH_SIZE        = 128
 GENERATE_LEN      = 50
 
 # 1. Prepare the Data
