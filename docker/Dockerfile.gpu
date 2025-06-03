@@ -4,6 +4,7 @@ RUN rm /etc/apt/sources.list.d/cuda.list
 
 RUN apt-get update
 RUN apt-get install -y unzip graphviz curl musescore3
+RUN apt-get install -y git
 
 RUN pip install --upgrade pip
 

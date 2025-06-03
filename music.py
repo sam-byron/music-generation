@@ -44,17 +44,19 @@ PARSE_MIDI_FILES   = True
 PARSED_DATA_PATH   = "parsed_data/"
 DATASET_REPETITIONS = 1
 
-SEQ_LEN           = 250
-EMBEDDING_DIM     = 256
-KEY_DIM           = 256
-N_HEADS           = 5
-DROPOUT_RATE      = 0.3
-FEED_FORWARD_DIM  = 256
-LOAD_MODEL        = False
+SEQ_LEN = 200
+EMBEDDING_DIM = 512
+KEY_DIM = 512
+N_HEADS = 10
+DROPOUT_RATE = 0.3
+FEED_FORWARD_DIM = 512
+LOAD_MODEL = False
 
-EPOCHS            = 5000
-BATCH_SIZE        = 128
-GENERATE_LEN      = 50
+# optimization
+EPOCHS = 500
+BATCH_SIZE = 256
+
+GENERATE_LEN = 200
 
 # 1. Prepare the Data
 file_list = glob.glob("./data/bach-cello/*.mid")
@@ -191,13 +193,14 @@ class TokenAndPositionEmbedding(layers.Layer):
         cfg.update({"vocab_size": self.token_emb.input_dim, "embed_dim": self.token_emb.output_dim})
         return cfg
 
-# 8. Build the Transformer model
+# 8. Build the Transformer model with two Transformer blocks
 note_inputs      = layers.Input(shape=(None,), dtype=tf.int32)
 dur_inputs       = layers.Input(shape=(None,), dtype=tf.int32)
 note_emb         = TokenAndPositionEmbedding(notes_vocab_size, EMBEDDING_DIM//2)(note_inputs)
 dur_emb          = TokenAndPositionEmbedding(durations_vocab_size, EMBEDDING_DIM//2)(dur_inputs)
 embeddings       = layers.Concatenate()([note_emb, dur_emb])
-x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention")(embeddings)
+x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block1")(embeddings)
+x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
 note_outputs     = layers.Dense(notes_vocab_size, activation="softmax",   name="note_outputs")(x)
 duration_outputs = layers.Dense(durations_vocab_size, activation="softmax", name="duration_outputs")(x)
 
@@ -245,6 +248,27 @@ class MusicGenerator(callbacks.Callback):
         midi.show()
         midi.write("midi", fp=os.path.join("output", f"output-{epoch:04d}.mid"))
 
+    # def on_epoch_end(self, epoch, logs=None):
+    #     for sample_num in range(3):
+    #         info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
+    #         midi = info[-1]["midi"].chordify()
+    #         print(f"Epoch {epoch}, Sample {sample_num}: {info[-1]['prompt']}")
+    #         midi.show()
+    #         filename = os.path.join("output", f"output-{epoch}-{sample_num}.mid")
+    #         midi.write("midi", fp=filename)
+
+    # import threading
+    # def on_epoch_end(self, epoch, logs=None):
+    #     def generate_and_save(epoch):
+    #         for sample_num in range(3):
+    #             info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
+    #             midi = info[-1]["midi"].chordify()
+    #             print(f"Epoch {epoch}, Sample {sample_num}: {info[-1]['prompt']}")
+    #             midi.show()
+    #             filename = os.path.join("output", f"output-{epoch}-{sample_num}.mid")
+    #             midi.write("midi", fp=filename)
+    #     threading.Thread(target=generate_and_save, args=(epoch,), daemon=True).start()
+
     def generate(self, start_notes, start_durations, max_tokens, temperature):
         midi_stream = music21.stream.Stream()
         midi_stream.append(music21.clef.BassClef())
@@ -258,9 +282,11 @@ class MusicGenerator(callbacks.Callback):
 
         info = []
         while len(tokens_n) < max_tokens:
+            # Gradually increase temperature
+            temp = temperature + (i / max_tokens) * (1.0 - temperature)
             x1 = np.array([tokens_n]); x2 = np.array([tokens_d])
             notes_pred, durs_pred = self.model.predict([x1, x2], verbose=0)
-            note_obj = self.get_note(notes_pred, durs_pred, temperature)
+            note_obj = self.get_note(notes_pred, durs_pred, temp)
             new_note, idx_n, n_str, idx_d, d_str = note_obj
             if new_note is not None:
                 midi_stream.append(new_note)
