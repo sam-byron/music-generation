@@ -45,16 +45,16 @@ PARSED_DATA_PATH   = "parsed_data/"
 DATASET_REPETITIONS = 1
 
 SEQ_LEN = 200
-EMBEDDING_DIM = 512
-KEY_DIM = 512
-N_HEADS = 8
+EMBEDDING_DIM = 256
+KEY_DIM = 256
+N_HEADS = 6
 DROPOUT_RATE = 0.3
-FEED_FORWARD_DIM = 1024
-LOAD_MODEL = True
+FEED_FORWARD_DIM = 512
+LOAD_MODEL = False
 
 # optimization
 EPOCHS = 500
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 
 GENERATE_LEN = 200
 
@@ -200,13 +200,13 @@ note_emb         = TokenAndPositionEmbedding(notes_vocab_size, EMBEDDING_DIM//2)
 dur_emb          = TokenAndPositionEmbedding(durations_vocab_size, EMBEDDING_DIM//2)(dur_inputs)
 embeddings       = layers.Concatenate()([note_emb, dur_emb])
 x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block1")(embeddings)
-# x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
+x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
 note_outputs     = layers.Dense(notes_vocab_size, activation="softmax",   name="note_outputs")(x)
 duration_outputs = layers.Dense(durations_vocab_size, activation="softmax", name="duration_outputs")(x)
 
 model = models.Model(inputs=[note_inputs, dur_inputs], outputs=[note_outputs, duration_outputs])
 model.compile(
-    optimizer="adam",
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
     loss=[losses.SparseCategoricalCrossentropy(), losses.SparseCategoricalCrossentropy()]
 )
 model.summary()
@@ -244,7 +244,7 @@ class MusicGenerator(callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
         midi = info[-1]["midi"].chordify()
-        print(info[-1]["prompt"])
+        # print(info[-1]["prompt"])
         midi.show()
         midi.write("midi", fp=os.path.join("output", f"output-{epoch:04d}.mid"))
 
@@ -313,9 +313,16 @@ model_checkpoint = callbacks.ModelCheckpoint(
 tensorboard_cb = callbacks.TensorBoard(log_dir="./logs")
 music_generator = MusicGenerator(notes_vocab, durations_vocab)
 
+# Split the zipped dataset into train and validation
+total_batches = len(notes) // BATCH_SIZE
+val_batches = max(1, int(0.1 * total_batches))
+train_ds = ds.skip(val_batches)
+val_ds = ds.take(val_batches)
+
 model.fit(
-    ds,
+    train_ds,
     epochs=EPOCHS,
+    validation_data=val_ds,
     callbacks=[model_checkpoint, tensorboard_cb, music_generator]
 )
 
