@@ -47,10 +47,10 @@ DATASET_REPETITIONS = 1
 SEQ_LEN = 200
 EMBEDDING_DIM = 512
 KEY_DIM = 512
-N_HEADS = 10
+N_HEADS = 8
 DROPOUT_RATE = 0.3
-FEED_FORWARD_DIM = 512
-LOAD_MODEL = False
+FEED_FORWARD_DIM = 1024
+LOAD_MODEL = True
 
 # optimization
 EPOCHS = 500
@@ -77,7 +77,7 @@ if PARSE_MIDI_FILES:
         file_list, parser, SEQ_LEN + 1, PARSED_DATA_PATH
     )
 else:
-    notes, durations = load_parsed_files()
+    notes, durations = load_parsed_files("./parsed_data")
 
 example_notes     = notes[658]
 example_durations = durations[658]
@@ -200,7 +200,7 @@ note_emb         = TokenAndPositionEmbedding(notes_vocab_size, EMBEDDING_DIM//2)
 dur_emb          = TokenAndPositionEmbedding(durations_vocab_size, EMBEDDING_DIM//2)(dur_inputs)
 embeddings       = layers.Concatenate()([note_emb, dur_emb])
 x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block1")(embeddings)
-x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
+# x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
 note_outputs     = layers.Dense(notes_vocab_size, activation="softmax",   name="note_outputs")(x)
 duration_outputs = layers.Dense(durations_vocab_size, activation="softmax", name="duration_outputs")(x)
 
@@ -212,7 +212,7 @@ model.compile(
 model.summary()
 
 if LOAD_MODEL:
-    model.load_weights("./checkpoint/checkpoint.ckpt")
+    model.load_weights("./checkpoint/checkpoint.weights.h5")
 
 # 9. Train the Transformer
 class MusicGenerator(callbacks.Callback):
