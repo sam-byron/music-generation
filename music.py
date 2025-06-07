@@ -17,7 +17,7 @@ import sys, os
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from transformer_utils import (
-    parse_midi_files,
+    parse_midi_files_toEvents as parse_midi_files,
     load_parsed_files,
     get_midi_note,
     SinePositionEncoding,
@@ -40,23 +40,23 @@ if gpus:
         print(e)
 
 # 0. Parameters
-PARSE_MIDI_FILES   = True
+PARSE_MIDI_FILES   = False
 PARSED_DATA_PATH   = "parsed_data/"
 DATASET_REPETITIONS = 1
 
-SEQ_LEN = 200
+SEQ_LEN = 600
 EMBEDDING_DIM = 256
 KEY_DIM = 256
 N_HEADS = 6
 DROPOUT_RATE = 0.3
 FEED_FORWARD_DIM = 512
 LOAD_MODEL = False
-
+USE_DURATIONS = False
 # optimization
 EPOCHS = 500
 BATCH_SIZE = 128
 
-GENERATE_LEN = 200
+GENERATE_LEN = 600
 
 # 1. Prepare the Data
 file_list = glob.glob("./data/bach-cello/*.mid")
@@ -77,7 +77,11 @@ if PARSE_MIDI_FILES:
         file_list, parser, SEQ_LEN + 1, PARSED_DATA_PATH
     )
 else:
-    notes, durations = load_parsed_files("./parsed_data")
+    notes, durations = load_parsed_files(PARSED_DATA_PATH)
+
+# if we’re only doing events, drop durations
+if not USE_DURATIONS:
+    durations = ["0.0"] * len(notes)
 
 example_notes     = notes[658]
 example_durations = durations[658]
@@ -91,44 +95,44 @@ def create_dataset(elements):
         .batch(BATCH_SIZE, drop_remainder=True)
         .shuffle(1000)
     )
-    vectorize_layer = layers.TextVectorization(
-        standardize=None, output_mode="int"
-    )
-    # run adapt on CPU only:
-    # with tf.device('/CPU:0'):
-    vectorize_layer.adapt(ds)
-    vocab = vectorize_layer.get_vocabulary()
-    return ds, vectorize_layer, vocab
+    vec = layers.TextVectorization(standardize=None, output_mode="int")
+    vec.adapt(ds)
+    return ds, vec, vec.get_vocabulary()
 
-notes_seq_ds, notes_vectorize_layer, notes_vocab = create_dataset(notes)
-durations_seq_ds, durations_vectorize_layer, durations_vocab = create_dataset(durations)
-seq_ds = tf.data.Dataset.zip((notes_seq_ds, durations_seq_ds))
+notes_ds, notes_vec, notes_vocab = create_dataset(notes)
+if USE_DURATIONS:
+    durs_ds, durs_vec, durs_vocab = create_dataset(durations)
+    seq_ds = tf.data.Dataset.zip((notes_ds, durs_ds))
+else:
+    seq_ds = notes_ds
 
 # Display example tokens
-example_tokenised_notes     = notes_vectorize_layer(example_notes)
-example_tokenised_durations = durations_vectorize_layer(example_durations)
+example_tokenised_notes     = notes_vec(example_notes)
+example_tokenised_durations = durations if not USE_DURATIONS else durs_vec(example_durations)
 print(f"{'note token':10} {'duration token':10}")
-for n, d in zip(example_tokenised_notes.numpy()[:11], example_tokenised_durations.numpy()[:11]):
+for n, d in zip(example_tokenised_notes.numpy()[:11], example_tokenised_durations[:11] if not USE_DURATIONS else example_tokenised_durations.numpy()[:11]):
     print(f"{n:10}{d:10}")
 
 notes_vocab_size     = len(notes_vocab)
-durations_vocab_size = len(durations_vocab)
+durations_vocab_size = len(durations_vocab) if USE_DURATIONS else 0
 print(f"\nNOTES_VOCAB: length = {notes_vocab_size}")
 for i, note in enumerate(notes_vocab[:10]):
     print(f"{i}: {note}")
-print(f"\nDURATIONS_VOCAB: length = {durations_vocab_size}")
-for i, dur in enumerate(durations_vocab[:10]):
-    print(f"{i}: {dur}")
+if USE_DURATIONS:
+    print(f"\nDURATIONS_VOCAB: length = {durations_vocab_size}")
+    for i, dur in enumerate(durations_vocab[:10]):
+        print(f"{i}: {dur}")
 
 # 3. Create the Training Set
-def prepare_inputs(notes, durations):
-    notes = tf.expand_dims(notes, -1)
-    durations = tf.expand_dims(durations, -1)
-    tokenized_notes     = notes_vectorize_layer(notes)
-    tokenized_durations = durations_vectorize_layer(durations)
-    x = (tokenized_notes[:, :-1], tokenized_durations[:, :-1])
-    y = (tokenized_notes[:, 1:],   tokenized_durations[:, 1:])
-    return x, y
+if USE_DURATIONS:
+    def prepare_inputs(n, d):
+        n = tf.expand_dims(n, -1); d = tf.expand_dims(d, -1)
+        tn = notes_vec(n); td = durs_vec(d)
+        return (tn[:, :-1], td[:, :-1]), (tn[:, 1:], td[:, 1:])
+else:
+    def prepare_inputs(n):
+        tn = notes_vec(tf.expand_dims(n, -1))
+        return tn[:, :-1], tn[:, 1:]
 
 ds = seq_ds.map(prepare_inputs).cache().prefetch(tf.data.AUTOTUNE).repeat(DATASET_REPETITIONS)
 example_input_output = ds.take(1).get_single_element()
@@ -193,23 +197,40 @@ class TokenAndPositionEmbedding(layers.Layer):
         cfg.update({"vocab_size": self.token_emb.input_dim, "embed_dim": self.token_emb.output_dim})
         return cfg
 
-# 8. Build the Transformer model with two Transformer blocks
-note_inputs      = layers.Input(shape=(None,), dtype=tf.int32)
-dur_inputs       = layers.Input(shape=(None,), dtype=tf.int32)
-note_emb         = TokenAndPositionEmbedding(notes_vocab_size, EMBEDDING_DIM//2)(note_inputs)
-dur_emb          = TokenAndPositionEmbedding(durations_vocab_size, EMBEDDING_DIM//2)(dur_inputs)
-embeddings       = layers.Concatenate()([note_emb, dur_emb])
-x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block1")(embeddings)
-x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
-x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block3")(x)
-note_outputs     = layers.Dense(notes_vocab_size, activation="softmax",   name="note_outputs")(x)
-duration_outputs = layers.Dense(durations_vocab_size, activation="softmax", name="duration_outputs")(x)
+# 8. Build the Transformer model
+if USE_DURATIONS:
+    # — your existing two‐input model (note_inputs, dur_inputs → two outputs) —
+    note_inputs = layers.Input((None,), dtype=tf.int32)
+    dur_inputs  = layers.Input((None,), dtype=tf.int32)
+    note_emb    = TokenAndPositionEmbedding(len(notes_vocab), EMBEDDING_DIM//2)(note_inputs)
+    dur_emb     = TokenAndPositionEmbedding(len(durs_vocab), EMBEDDING_DIM//2)(dur_inputs)
+    x = layers.Concatenate()([note_emb, dur_emb])
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn1")(x)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn2")(x)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn3")(x)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn4")(x)
+    note_out = layers.Dense(len(notes_vocab), activation="softmax")(x)
+    dur_out  = layers.Dense(len(durs_vocab),  activation="softmax")(x)
+    model = models.Model([note_inputs, dur_inputs], [note_out, dur_out])
+    model.compile(
+        optimizer="adam",
+        loss=[losses.SparseCategoricalCrossentropy(), losses.SparseCategoricalCrossentropy()]
+    )
+else:
+    # single‐input, single‐output model
+    evt_inputs = layers.Input((None,), dtype=tf.int32)
+    evt_emb    = TokenAndPositionEmbedding(len(notes_vocab), EMBEDDING_DIM)(evt_inputs)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn1")(evt_emb)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn2")(x)
+    x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn3")(x)
+    # x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attn4")(x)
+    evt_out = layers.Dense(len(notes_vocab), activation="softmax")(x)
+    model   = models.Model(evt_inputs, evt_out)
+    model.compile(
+        optimizer="adam",
+        loss=losses.SparseCategoricalCrossentropy()
+    )
 
-model = models.Model(inputs=[note_inputs, dur_inputs], outputs=[note_outputs, duration_outputs])
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-    loss=[losses.SparseCategoricalCrossentropy(), losses.SparseCategoricalCrossentropy()]
-)
 model.summary()
 
 if LOAD_MODEL:
@@ -220,9 +241,9 @@ class MusicGenerator(callbacks.Callback):
     def __init__(self, index_to_note, index_to_duration, top_k=10):
         super().__init__()
         self.index_to_note     = index_to_note
-        self.note_to_index     = {n:i for i,n in enumerate(index_to_note)}
+        self.note_to_index     = {n: i for i, n in enumerate(index_to_note)}
         self.index_to_duration = index_to_duration
-        self.duration_to_index = {d:i for i,d in enumerate(index_to_duration)}
+        self.duration_to_index = {d: i for i, d in enumerate(index_to_duration)}
 
     def sample_from(self, probs, temperature):
         p = probs ** (1/temperature)
@@ -242,57 +263,34 @@ class MusicGenerator(callbacks.Callback):
 
         return get_midi_note(note, dur), idx, note, idx_d, dur
 
-    def on_epoch_end(self, epoch, logs=None):
-        info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
-        midi = info[-1]["midi"].chordify()
-        # print(info[-1]["prompt"])
-        midi.show()
-        midi.write("midi", fp=os.path.join("output", f"output-{epoch:04d}.mid"))
-
-    # def on_epoch_end(self, epoch, logs=None):
-    #     for sample_num in range(3):
-    #         info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
-    #         midi = info[-1]["midi"].chordify()
-    #         print(f"Epoch {epoch}, Sample {sample_num}: {info[-1]['prompt']}")
-    #         midi.show()
-    #         filename = os.path.join("output", f"output-{epoch}-{sample_num}.mid")
-    #         midi.write("midi", fp=filename)
-
-    # import threading
-    # def on_epoch_end(self, epoch, logs=None):
-    #     def generate_and_save(epoch):
-    #         for sample_num in range(3):
-    #             info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
-    #             midi = info[-1]["midi"].chordify()
-    #             print(f"Epoch {epoch}, Sample {sample_num}: {info[-1]['prompt']}")
-    #             midi.show()
-    #             filename = os.path.join("output", f"output-{epoch}-{sample_num}.mid")
-    #             midi.write("midi", fp=filename)
-    #     threading.Thread(target=generate_and_save, args=(epoch,), daemon=True).start()
-
     def generate(self, start_notes, start_durations, max_tokens, temperature):
         midi_stream = music21.stream.Stream()
-        midi_stream.append(music21.clef.BassClef())
+        midi_stream.append(music21.instrument.Violoncello())
         tokens_n = [self.note_to_index.get(x, 1) for x in start_notes]
         tokens_d = [self.duration_to_index.get(x, 1) for x in start_durations]
 
+        # Append initial seed tokens to midi stream
         for n, d in zip(start_notes, start_durations):
             note_obj = get_midi_note(n, d)
             if note_obj is not None:
                 midi_stream.append(note_obj)
 
         info = []
+        i = 0  # counter for gradual temperature increase
         while len(tokens_n) < max_tokens:
             # Gradually increase temperature
             temp = temperature + (i / max_tokens) * (1.0 - temperature)
-            x1 = np.array([tokens_n]); x2 = np.array([tokens_d])
+            x1 = np.array([tokens_n])
+            x2 = np.array([tokens_d])
             notes_pred, durs_pred = self.model.predict([x1, x2], verbose=0)
             note_obj = self.get_note(notes_pred, durs_pred, temp)
             new_note, idx_n, n_str, idx_d, d_str = note_obj
             if new_note is not None:
                 midi_stream.append(new_note)
-            tokens_n.append(idx_n); tokens_d.append(idx_d)
-            start_notes.append(n_str); start_durations.append(d_str)
+            tokens_n.append(idx_n)
+            tokens_d.append(idx_d)
+            start_notes.append(n_str)
+            start_durations.append(d_str)
 
             info.append({
                 "prompt": [start_notes.copy(), start_durations.copy()],
@@ -302,9 +300,54 @@ class MusicGenerator(callbacks.Callback):
                 "duration_probs": durs_pred[0][-1],
                 "atts": None,  # skip attention tracking here
             })
-            if n_str == "START":
+            if n_str == "START":  # or other termination condition
                 break
+            i += 1
         return info
+
+    def generate_in_chunks(self, total_tokens, temperature):
+        chunk_length = total_tokens // 3
+        # Chunk 1: seed from fixed tokens
+        chunk1_info = self.generate(["START"], ["0.0"], max_tokens=chunk_length, temperature=temperature)
+        prompt1_notes, prompt1_durs = chunk1_info[-1]["prompt"]
+
+        # Seed Chunk 2 with second half of chunk1 tokens
+        half1 = len(prompt1_notes) // 2
+        seed_notes2 = prompt1_notes[half1:].copy()
+        seed_durations2 = prompt1_durs[half1:].copy()
+        chunk2_info = self.generate(seed_notes2, seed_durations2, max_tokens=chunk_length, temperature=temperature)
+        prompt2_notes, prompt2_durs = chunk2_info[-1]["prompt"]
+
+        # Seed Chunk 3 with second half of chunk2 tokens
+        half2 = len(prompt2_notes) // 2
+        seed_notes3 = prompt2_notes[half2:].copy()
+        seed_durations3 = prompt2_durs[half2:].copy()
+        chunk3_info = self.generate(seed_notes3, seed_durations3, max_tokens=chunk_length, temperature=temperature)
+        prompt3_notes, prompt3_durs = chunk3_info[-1]["prompt"]
+
+        # Concatenate by taking all tokens from chunk1 then appending the new tokens from chunks 2 and 3
+        # (avoiding duplicate seed tokens)
+        full_notes = prompt1_notes + prompt2_notes[half2:] + prompt3_notes[len(prompt3_notes)//2:]
+        full_durations = prompt1_durs + prompt2_durs[half2:] + prompt3_durs[len(prompt3_durs)//2:]
+
+        # Build full midi stream from concatenated tokens
+        full_midi = music21.stream.Stream()
+        full_midi.append(music21.instrument.Violoncello())
+        for n, d in zip(full_notes, full_durations):
+            note_obj = get_midi_note(n, d)
+            if note_obj is not None:
+                full_midi.append(note_obj)
+
+        return {"prompt": [full_notes, full_durations], "midi": full_midi}
+
+    def on_epoch_end(self, epoch, logs=None):
+        # Generate full sequence in three chunks, then concatenate
+        full_info = self.generate_in_chunks(total_tokens=GENERATE_LEN, temperature=0.5)
+        midi = full_info["midi"].chordify()
+        # Optionally print the concatenated prompt
+        # print("Combined prompt:", full_info["prompt"])
+        midi.show()
+        midi.write("midi", fp=os.path.join("output", f"output-{epoch:04d}.mid"))
 
 # Callbacks & training
 model_checkpoint = callbacks.ModelCheckpoint(
@@ -312,7 +355,7 @@ model_checkpoint = callbacks.ModelCheckpoint(
     save_weights_only=True, save_freq="epoch", verbose=0
 )
 tensorboard_cb = callbacks.TensorBoard(log_dir="./logs")
-music_generator = MusicGenerator(notes_vocab, durations_vocab)
+music_generator = MusicGenerator(notes_vocab, durations_vocab if USE_DURATIONS else [])
 
 # Split the zipped dataset into train and validation
 total_batches = len(notes) // BATCH_SIZE

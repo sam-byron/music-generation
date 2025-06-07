@@ -65,6 +65,57 @@ def parse_midi_files(file_list, parser, seq_len, parsed_data_path=None):
 
     return notes_list, duration_list
 
+def parse_midi_files_toEvents(file_list, parser, seq_len, parsed_data_path=None):
+    notes_list = []
+    events = []
+
+    for i, file in enumerate(file_list):
+        print(i + 1, "Parsing %s" % file)
+        score = parser.parse(file).chordify()
+
+        # start token
+        events.append("START")
+
+        for element in score.flat:
+            if isinstance(element, music21.key.Key):
+                # keep your old key tokens if you like
+                tonic, mode = element.tonic.name, element.mode
+                events.append(f"{tonic}:{mode}")
+            elif isinstance(element, music21.meter.TimeSignature):
+                events.append(f"{element.ratioString}TS")
+
+            elif isinstance(element, music21.note.Rest):
+                dur = element.duration.quarterLength
+                events.append(f"TIME_SHIFT{dur}")
+
+            elif isinstance(element, music21.note.Note):
+                midi = element.pitch.midi
+                dur = element.duration.quarterLength
+                events.append(f"NOTE_ON{midi}")
+                events.append(f"TIME_SHIFT{dur}")
+                events.append(f"NOTE_OFF{midi}")
+
+            elif isinstance(element, music21.chord.Chord):
+                dur = element.duration.quarterLength
+                # fire on for each pitch
+                for p in element.pitches:
+                    events.append(f"NOTE_ON{p.midi}")
+                events.append(f"TIME_SHIFT{dur}")
+                # fire off for each pitch
+                for p in element.pitches:
+                    events.append(f"NOTE_OFF{p.midi}")
+
+        print(f"{len(events)} events parsed so far")
+
+    print(f"Building sequences of length {seq_len}")
+    for i in range(len(events) - seq_len):
+        notes_list.append(" ".join(events[i : i + seq_len]))
+
+    if parsed_data_path:
+        with open(os.path.join(parsed_data_path, "events"), "wb") as f:
+            pkl.dump(notes_list, f)
+
+    return notes_list, []
 
 def load_parsed_files(parsed_data_path):
     with open(os.path.join(parsed_data_path, "notes"), "rb") as f:
