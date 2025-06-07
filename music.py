@@ -201,6 +201,7 @@ dur_emb          = TokenAndPositionEmbedding(durations_vocab_size, EMBEDDING_DIM
 embeddings       = layers.Concatenate()([note_emb, dur_emb])
 x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block1")(embeddings)
 x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block2")(x)
+x                = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM, FEED_FORWARD_DIM, name="attention_block3")(x)
 note_outputs     = layers.Dense(notes_vocab_size, activation="softmax",   name="note_outputs")(x)
 duration_outputs = layers.Dense(durations_vocab_size, activation="softmax", name="duration_outputs")(x)
 
