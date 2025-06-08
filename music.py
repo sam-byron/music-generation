@@ -15,6 +15,7 @@ from transformer_utils import (
     load_parsed_files,
     get_midi_note,
     SinePositionEncoding,
+    get_midi_note_events,
 )
 
 # 0. Parameters
@@ -29,7 +30,7 @@ N_HEADS         = 6
 DROPOUT_RATE    = 0.3
 FEED_FORWARD_DIM= 512
 
-LOAD_MODEL      = False  # <-- switch on/off loading a pre‐trained model
+LOAD_MODEL      = True  # <-- switch on/off loading a pre‐trained model
 USE_DURATIONS   = False   # <-- switch on/off two‐stream durations
 EPOCHS          = 500
 BATCH_SIZE      = 128
@@ -237,8 +238,10 @@ class MusicGenerator(callbacks.Callback):
             d_str = self.index_to_duration[idx_d]
         else:
             idx_d, d_str = None, None
-
-        return get_midi_note(n_str, d_str), idx_n, n_str, idx_d, d_str
+        if self.use_durations:
+            return get_midi_note(n_str, d_str), idx_n, n_str, idx_d, d_str
+        else:
+            return get_midi_note_events(n_str, None), idx_n, n_str, None, None
 
     def generate(self, start_notes, start_durations, max_tokens, temperature):
         stream = music21.stream.Stream()
@@ -248,7 +251,10 @@ class MusicGenerator(callbacks.Callback):
         tokens_d = [self.duration_to_index.get(x, 1) for x in start_durations]
 
         for n, d in zip(start_notes, start_durations):
-            note_obj = get_midi_note(n, d)
+            if USE_DURATIONS:
+                note_obj = get_midi_note(n, d)
+            else:
+                note_obj = get_midi_note_events(n, None)
             if note_obj is not None:
                 stream.append(note_obj)
 
