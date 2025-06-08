@@ -77,6 +77,7 @@ def parse_midi_files_toEvents(file_list, parser, seq_len, parsed_data_path=None)
         events.append("START")
 
         for element in score.flat:
+            # print(f"Parsing element {element} of type {type(element)}")
             if isinstance(element, music21.key.Key):
                 # keep your old key tokens if you like
                 tonic, mode = element.tonic.name, element.mode
@@ -86,33 +87,41 @@ def parse_midi_files_toEvents(file_list, parser, seq_len, parsed_data_path=None)
 
             elif isinstance(element, music21.note.Rest):
                 dur = element.duration.quarterLength
-                events.append(f"TIME_SHIFT{dur}")
+                events.append(f"TIME_SHIFT<{dur}>")
 
             elif isinstance(element, music21.note.Note):
                 midi = element.pitch.midi
+                midi  = element.nameWithOctave
                 dur = element.duration.quarterLength
-                events.append(f"NOTE_ON{midi}")
-                events.append(f"TIME_SHIFT{dur}")
-                events.append(f"NOTE_OFF{midi}")
+                events.append(f"NOTE_ON<{midi}>")
+                events.append(f"TIME_SHIFT<{dur}>")
+                events.append(f"NOTE_OFF<{midi}>")
 
             elif isinstance(element, music21.chord.Chord):
-                dur = element.duration.quarterLength
+                # note_name = element.pitches[-1].nameWithOctave
+                # duration_name = str(element.duration.quarterLength)
+                # events.append(f"NOTE_ON<{note_name}>")
+                # dur = element.duration.quarterLength
+                # events.append(f"TIME_SHIFT<{dur}>")
+                # events.append(f"NOTE_OFF<{note_name}>")
+
                 # fire on for each pitch
                 for p in element.pitches:
-                    events.append(f"NOTE_ON{p.midi}")
-                events.append(f"TIME_SHIFT{dur}")
+                    events.append(f"NOTE_ON<{p.nameWithOctave}>")
+                events.append(f"TIME_SHIFT<{element.duration.quarterLength}>")
                 # fire off for each pitch
                 for p in element.pitches:
-                    events.append(f"NOTE_OFF{p.midi}")
+                    events.append(f"NOTE_OFF<{p.nameWithOctave}>")
 
         print(f"{len(events)} events parsed so far")
+        # print(f"Events: {events[:10][0:20]} ...")
 
     print(f"Building sequences of length {seq_len}")
     for i in range(len(events) - seq_len):
         notes_list.append(" ".join(events[i : i + seq_len]))
 
     if parsed_data_path:
-        with open(os.path.join(parsed_data_path, "events"), "wb") as f:
+        with open(os.path.join(parsed_data_path, "notes"), "wb") as f:
             pkl.dump(notes_list, f)
 
     return notes_list, []
@@ -120,14 +129,45 @@ def parse_midi_files_toEvents(file_list, parser, seq_len, parsed_data_path=None)
 def load_parsed_files(parsed_data_path):
     with open(os.path.join(parsed_data_path, "notes"), "rb") as f:
         notes = pkl.load(f)
-    with open(os.path.join(parsed_data_path, "durations"), "rb") as f:
-        durations = pkl.load(f)
+    # Load durations if they exist, otherwise return empty list
+    durations = []
+    if os.path.exists(os.path.join(parsed_data_path, "durations")):
+        with open(os.path.join(parsed_data_path, "durations"), "rb") as f:
+            durations = pkl.load(f)
     return notes, durations
 
 
 def get_midi_note(sample_note, sample_duration):
     new_note = None
+    
+    # TIME_SHIFT<dur>: insert a Rest of that length
+    if sample_note.startswith("TIME_SHIFT"):
+        # extract between “<” and “>”
+        try:
+            dur = float(sample_note.split("<")[1].split(">")[0])
+        except:
+            dur = float(sample_duration or 0.0)
+        r = music21.note.Rest()
+        r.duration = music21.duration.Duration(dur)
+        r.storedInstrument = music21.instrument.Violoncello()
+        return r
 
+    # NOTE_OFF<pitch>: we rely on the TIME_SHIFT for timing, so skip
+    if sample_note.startswith("NOTE_OFF"):
+        return None
+
+    # NOTE_ON<pitch>: start a new Note
+    if sample_note.startswith("NOTE_ON"):
+        midi = sample_note.split("<", 1)[1].split(">", 1)[0]
+    
+        n = music21.note.Note(midi)
+        # n.pitch.midi = midi
+        d = float(sample_duration) if sample_duration else 1.0
+        n.duration = music21.duration.Duration(d)
+        n.storedInstrument = music21.instrument.Violoncello()
+        return n
+
+    # fall through to your existing key/TS/rest/chord logic
     if "TS" in sample_note:
         new_note = music21.meter.TimeSignature(sample_note.split("TS")[0])
 
@@ -135,31 +175,24 @@ def get_midi_note(sample_note, sample_duration):
         tonic, mode = sample_note.split(":")
         new_note = music21.key.Key(tonic, mode)
 
-    elif sample_note == "rest":
-        new_note = music21.note.Rest()
-        new_note.duration = music21.duration.Duration(
-            float(Fraction(sample_duration))
-        )
-        new_note.storedInstrument = music21.instrument.Violoncello()
+    # elif sample_note == "rest":
+    #     new_note = music21.note.Rest()
+    #     new_note.duration = music21.duration.Duration(
+    #         float(Fraction(sample_duration))
+    #     )
+    #     new_note.storedInstrument = music21.instrument.Violoncello()
 
-    elif "." in sample_note:
-        notes_in_chord = sample_note.split(".")
-        chord_notes = []
-        for current_note in notes_in_chord:
-            n = music21.note.Note(current_note)
-            n.duration = music21.duration.Duration(
-                float(Fraction(sample_duration))
-            )
-            n.storedInstrument = music21.instrument.Violoncello()
-            chord_notes.append(n)
-        new_note = music21.chord.Chord(chord_notes)
-
-    elif sample_note == "rest":
-        new_note = music21.note.Rest()
-        new_note.duration = music21.duration.Duration(
-            float(Fraction(sample_duration))
-        )
-        new_note.storedInstrument = music21.instrument.Violoncello()
+    # elif "." in sample_note:
+    #     notes_in_chord = sample_note.split(".")
+    #     chord_notes = []
+    #     for current_note in notes_in_chord:
+    #         n = music21.note.Note(current_note)
+    #         n.duration = music21.duration.Duration(
+    #             float(Fraction(sample_duration))
+    #         )
+    #         n.storedInstrument = music21.instrument.Violoncello()
+    #         chord_notes.append(n)
+    #     new_note = music21.chord.Chord(chord_notes)
 
     elif sample_note != "START":
         new_note = music21.note.Note(sample_note)
