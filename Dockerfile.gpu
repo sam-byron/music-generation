@@ -18,5 +18,8 @@ RUN pip install --upgrade pip && \
     pip install tensorflow-io && pip uninstall -y tensorflow-io
 
 # copy your code
-COPY ./app /app
+COPY app/ /app
 
+ENV PYTHONPATH="${PYTHONPATH}:/app"
+
+# CMD ["python3", "infer.py"]

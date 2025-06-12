@@ -1,3 +1,5 @@
+
+cd data  &&
 mkdir bach-cello &&
 cd bach-cello/ && 
 echo 'Downloading...' && 

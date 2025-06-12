@@ -7,6 +7,13 @@ from tensorflow.keras import layers, models, losses, callbacks
 import music21
 import sys
 
+# pus = tf.config.list_physical_devices('GPU')
+# for gpu in gpus:
+#     tf.config.experimental.set_memory_growth(gpu, True)
+
+# (Optional) mixed precision to lower memory footprint
+# mixed_precision.set_global_policy('mixed_float16')
+
 # ensure local transformer_utils.py is found first
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from transformer_utils import (
@@ -16,6 +23,7 @@ from transformer_utils import (
     get_midi_note,
     SinePositionEncoding,
     get_midi_note_events,
+    reconstruct_midi_from_events,
 )
 
 # 0. Parameters
@@ -26,14 +34,14 @@ DATASET_REPETITIONS = 1
 SEQ_LEN         = 600
 EMBEDDING_DIM   = 256
 KEY_DIM         = 256
-N_HEADS         = 6
+N_HEADS         = 5
 DROPOUT_RATE    = 0.3
 FEED_FORWARD_DIM= 512
 
-LOAD_MODEL      = True  # <-- switch on/off loading a pre‐trained model
+LOAD_MODEL      = False  # <-- switch on/off loading a pre‐trained model
 USE_DURATIONS   = False   # <-- switch on/off two‐stream durations
 EPOCHS          = 500
-BATCH_SIZE      = 128
+BATCH_SIZE      = 32
 
 GENERATE_LEN    = 600
 
@@ -53,7 +61,7 @@ print(f"Found {len(file_list)} MIDI files")
 parser = music21.converter
 
 if PARSE_MIDI_FILES:
-    notes, durations = parse_midi_files(
+    notes = parse_midi_files(
         file_list, parser, SEQ_LEN + 1, PARSED_DATA_PATH
     )
 else:
@@ -186,7 +194,8 @@ if USE_DURATIONS:
     model.compile(
         optimizer="adam",
         loss=[losses.SparseCategoricalCrossentropy(),
-              losses.SparseCategoricalCrossentropy()]
+              losses.SparseCategoricalCrossentropy(),
+              run_eagerly-True]
     )
 else:
     evt_inputs = layers.Input((None,), dtype=tf.int32)
@@ -241,7 +250,7 @@ class MusicGenerator(callbacks.Callback):
         if self.use_durations:
             return get_midi_note(n_str, d_str), idx_n, n_str, idx_d, d_str
         else:
-            return get_midi_note_events(n_str, None), idx_n, n_str, None, None
+            return reconstruct_midi_from_events(n_str, None), idx_n, n_str, None, None
 
     def generate(self, start_notes, start_durations, max_tokens, temperature):
         stream = music21.stream.Stream()
@@ -254,7 +263,7 @@ class MusicGenerator(callbacks.Callback):
             if USE_DURATIONS:
                 note_obj = get_midi_note(n, d)
             else:
-                note_obj = get_midi_note_events(n, None)
+                note_obj = reconstruct_midi_from_events(n, None)
             if note_obj is not None:
                 stream.append(note_obj)
 
@@ -293,9 +302,10 @@ class MusicGenerator(callbacks.Callback):
         return info
 
     def on_epoch_end(self, epoch, logs=None):
+        # if epoch % 20 == 0:
         full = self.generate(["START"], ["0.0"],
-                             max_tokens=GENERATE_LEN,
-                             temperature=0.5)
+                            max_tokens=GENERATE_LEN,
+                            temperature=0.5)
         midi = full[-1]["midi"].chordify()
         midi.show()
         out_fp = os.path.join("output", f"epoch-{epoch:04d}.mid")
