@@ -6,10 +6,15 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, losses, callbacks
 import music21
 import sys
+from tensorflow.keras.layers import TextVectorization
 
-# pus = tf.config.list_physical_devices('GPU')
-# for gpu in gpus:
-#     tf.config.experimental.set_memory_growth(gpu, True)
+
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+
+gpus = tf.config.list_physical_devices('GPU')
+for gpu in gpus:
+    tf.config.experimental.set_memory_growth(gpu, True)
 
 # (Optional) mixed precision to lower memory footprint
 # mixed_precision.set_global_policy('mixed_float16')
@@ -27,7 +32,7 @@ from transformer_utils import (
 )
 
 # 0. Parameters
-PARSE_MIDI_FILES    = True
+PARSE_MIDI_FILES    = False
 PARSED_DATA_PATH    = "parsed_data/"
 DATASET_REPETITIONS = 1
 
@@ -41,18 +46,18 @@ FEED_FORWARD_DIM= 512
 LOAD_MODEL      = False  # <-- switch on/off loading a pre‐trained model
 USE_DURATIONS   = False   # <-- switch on/off two‐stream durations
 EPOCHS          = 500
-BATCH_SIZE      = 32
+BATCH_SIZE      = 16
 
 GENERATE_LEN    = 600
 
 # 0.5. GPU setup
-gpus = tf.config.list_physical_devices("GPU")
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        print(e)
+# gpus = tf.config.list_physical_devices("GPU")
+# if gpus:
+#     try:
+#         for gpu in gpus:
+#             tf.config.experimental.set_memory_growth(gpu, True)
+#     except RuntimeError as e:
+#         print(e)
 
 # 1. Prepare the Data
 file_list = glob.glob("./data/bach-cello/*.mid")
@@ -71,6 +76,23 @@ else:
 if not USE_DURATIONS:
     durations = ["0.0"] * len(notes)
 
+class StringVectorization(TextVectorization):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._vocab_tensor = None
+
+    def adapt(self, data, **kwargs):
+        super().adapt(data, **kwargs)
+        vocab = self.get_vocabulary()
+        self._vocab_tensor = tf.constant(vocab, dtype=tf.string)
+
+    def call(self, inputs):
+        # convert inputs to string
+        if isinstance(inputs, tf.Tensor):
+            if inputs.dtype != tf.string:
+                inputs = tf.strings.as_string(inputs)
+        return super().call(inputs)
+
 # 2. Tokenize the data
 def create_dataset(elements):
     ds = (
@@ -78,7 +100,7 @@ def create_dataset(elements):
         .batch(BATCH_SIZE, drop_remainder=True)
         .shuffle(1000)
     )
-    vec = layers.TextVectorization(standardize=None, output_mode="int")
+    vec = StringVectorization(standardize=None)
     vec.adapt(ds)
     return ds, vec, vec.get_vocabulary()
 
@@ -110,7 +132,7 @@ ds = (
     .map(prepare_inputs)
     .cache()
     .prefetch(tf.data.AUTOTUNE)
-    .repeat(DATASET_REPETITIONS)
+    # .repeat(DATASET_REPETITIONS)
 )
 
 # 5. Causal attention mask
@@ -194,8 +216,9 @@ if USE_DURATIONS:
     model.compile(
         optimizer="adam",
         loss=[losses.SparseCategoricalCrossentropy(),
-              losses.SparseCategoricalCrossentropy(),
-              run_eagerly-True]
+              losses.SparseCategoricalCrossentropy()],
+        run_eagerly=True,
+        steps_per_execution=1,
     )
 else:
     evt_inputs = layers.Input((None,), dtype=tf.int32)
