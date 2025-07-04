@@ -31,12 +31,12 @@ for gpu in gpus:
 # mixed_precision.set_global_policy('mixed_float16')
 
 # 0. Parameters
-PARSE_MIDI_FILES    = False
+PARSE_MIDI_FILES    = True
 PARSED_DATA_PATH   = "events_parsed_data/"
 OUTPUT_MIDI_PATH = "evt_output/"
 DATASET_REPETITIONS = 1
 
-SEQ_LEN         = 400
+SEQ_LEN         = 200
 EMBEDDING_DIM   = 256
 KEY_DIM         = 256
 N_HEADS         = 5
@@ -92,7 +92,7 @@ def main():
 
     if PARSE_MIDI_FILES:
         notes = parse_midi_files(
-            PARSED_DATA_PATH
+            PARSED_DATA_PATH, SEQ_LEN
         )
     else:
         notes = load_parsed_files(PARSED_DATA_PATH)
@@ -182,7 +182,7 @@ def main():
     evt_emb    = TokenAndPositionEmbedding(len(notes_vocab),
                                         EMBEDDING_DIM)(evt_inputs)
     x = evt_emb
-    for i in range(3):
+    for i in range(2):
         x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM,
                             FEED_FORWARD_DIM, name=f"attn{i+1}")(x)
     evt_out = layers.Dense(len(notes_vocab), activation="softmax")(x)
@@ -219,17 +219,15 @@ def main():
                 idx_n, _ = self.sample_from(notes_pred[0, -1], temperature)
             n_str = self.index_to_note[idx_n]
 
-            idx_d, d_str = None, None
-            return reconstruct_midi_from_events(n_str, None), idx_n, n_str, None, None
+            return reconstruct_midi_from_events(n_str, None), idx_n, n_str
 
         def generate(self, start_notes, start_durations, max_tokens, temperature):
             stream = music21.stream.Stream()
             stream.append(music21.instrument.Violoncello())
 
             tokens_n = [self.note_to_index.get(x, 1) for x in start_notes]
-            tokens_d = [self.duration_to_index.get(x, 1) for x in start_durations]
 
-            for n, d in zip(start_notes, start_durations):
+            for n in start_notes:
                 note_obj = reconstruct_midi_from_events(n, None)
                 if note_obj is not None:
                     stream.append(note_obj)
@@ -245,7 +243,7 @@ def main():
                 notes_pred = model(x1, training=False).numpy()
                 durs_pred  = None
 
-                note_obj, idx_n, n_str, idx_d, d_str = self.get_note(
+                note_obj, idx_n, n_str = self.get_note(
                     notes_pred, durs_pred, temp
                 )
                 if note_obj is not None:
@@ -257,9 +255,8 @@ def main():
                 info.append({
                     "prompt": [start_notes.copy(), start_durations.copy()],
                     "midi":   stream,
-                    "chosen_note": (n_str, d_str),
+                    "chosen_note": (n_str),
                     "note_probs": notes_pred[0, -1],
-                    "duration_probs": durs_pred[0, -1] if durs_pred is not None else None
                 })
                 i += 1
 
@@ -271,8 +268,8 @@ def main():
                                 max_tokens=GENERATE_LEN,
                                 temperature=0.5)
             midi = full[-1]["midi"].chordify()
-            midi.show()
-            out_fp = os.path.join("output", f"epoch-{epoch:04d}.mid")
+            midi.show('text')
+            out_fp = os.path.join(OUTPUT_MIDI_PATH, f"epoch-{epoch:04d}.mid")
             midi.write("midi", fp=out_fp)
 
     # 10. Train

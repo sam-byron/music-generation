@@ -6,13 +6,13 @@ import pickle as pkl
 import os
 
 PARSED_DATA_PATH   = "events_parsed_data/"
-PRINT = False
 OUTPUT_MIDI_PATH = "evt_output/"
 
-def parse_monophonic_music_test(parsed_data_path=None):
+def parse_monophonic_music(parsed_data_path, seq_len):
     # Step 1: Parse the input monophonic music file into a music21 stream.
     # (Replace 'path/to/file' with the actual path to your MusicXML or MIDI file)
     file_list = glob.glob("./data/bach-cello/*.mid")
+    events = []  # list to hold tuples of (time, event_string)
 
     for file in file_list:
         score = converter.parse(file)  # Load the first file in the list
@@ -24,7 +24,6 @@ def parse_monophonic_music_test(parsed_data_path=None):
         notes = flat_score.getElementsByClass(note.Note)
 
         # Step 3: Collect note start (NOTE_ON) and note end (NOTE_OFF) events with their times.
-        events = []  # list to hold tuples of (time, event_string)
         for n in notes:
             pitch_name = n.nameWithOctave    # e.g., "C4", "F#5" - note name with octave
             start_time = n.offset            # note start time (offset from beginning in quarterLength units)
@@ -40,6 +39,7 @@ def parse_monophonic_music_test(parsed_data_path=None):
 
         # Step 5: Iterate through sorted events and insert TIME_SHIFT events for gaps between events.
         timeline = []   # final list of timeline events as strings
+        timeline.append("START")  # start of the timeline
         last_time = 0.0 # tracks the time of the last event processed
         for time, event in events:
             # Calculate the time difference from the previous event
@@ -52,34 +52,22 @@ def parse_monophonic_music_test(parsed_data_path=None):
             # Update last_time to the current event's time
             last_time = time
 
-        # Step 6: Output the timeline events.
-        # Print each event on a new line in the order they occur.
-        if PRINT:
-            for evt in timeline:
-                print(evt)
+    notes_list = []
+    print(f"Building sequences of length {seq_len}")
+    for i in range(len(timeline) - seq_len):
+        notes_list.append(" ".join(timeline[i : (i + seq_len)]))
 
-        # write the timeline to a file with name based on the input file
-        output_filename = file.split('/')[-1].replace('.mid', '_events.pkl')
-        with open(parsed_data_path + output_filename, "wb") as f:
-            pkl.dump(timeline, f)
+    with open(os.path.join(parsed_data_path, "notes"), "wb") as f:
+        pkl.dump(notes_list, f)
 
+    return notes_list
 
-def load_parsed_events_test():
-    # Load the parsed events from the saved file.
-    with open(PARSED_DATA_PATH + "cs1-1pre_events.pkl", "rb") as f:
-        timeline = pkl.load(f)
-    return timeline
 
 def load_parsed_events(parsed_data_path=None):
     # Load the parsed events from the saved file.
-    parsed_events_files = glob.glob(parsed_data_path + "*.pkl")
-    timelines = []  # list to hold all timelines
-    for file in parsed_events_files:
-        with open(file, "rb") as f:
-            timeline = pkl.load(f)
-        # concatenate all timelines into a single list
-        timelines.extend(timeline)
-    return timelines
+    with open(os.path.join(parsed_data_path, "notes"), "rb") as f:
+        notes = pkl.load(f)
+    return notes
 
 def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_path: str = None):
     """
@@ -94,7 +82,7 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
         music21.stream.Stream containing the reconstructed notes.
     """
     s = stream.Stream()
-    s.append(MetronomeMark(number=tempo_bpm))
+    # s.append(MetronomeMark(number=tempo_bpm))
 
     current_time = 0.0
     # Keep track of active notes: pitch_name -> start_time
@@ -125,26 +113,3 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
     if output_path:
         s.write('midi', fp=os.path.join(output_path, f"output.mid"))
     return s
-
-# def on_epoch_end(self, epoch, logs=None):
-#     info = self.generate(["START"], ["0.0"], max_tokens=GENERATE_LEN, temperature=0.5)
-#     midi = info[-1]["midi"].chordify()
-#     # print(info[-1]["prompt"])
-#     midi.show()
-#     midi.write("midi", fp=os.path.join("output", f"output-{epoch:04d}.mid"))
-
-def test_evt_data_rep():
-    # Test the event data representation by parsing a monophonic music file.
-    parse_monophonic_music_test(parsed_data_path=PARSED_DATA_PATH)
-
-    # Load the parsed events and reconstruct the MIDI stream.
-    events = load_parsed_events_test()
-    reconstructed_stream = reconstruct_midi_from_events(events, tempo_bpm=120.0, output_path=OUTPUT_MIDI_PATH)
-
-    # # Show the reconstructed MIDI stream.
-    # reconstructed_stream.show('midi')
-
-if __name__ == "__main__":
-    # Run the test function to parse and reconstruct MIDI from events.
-    test_evt_data_rep()
-    print("Event data representation test completed successfully.")
