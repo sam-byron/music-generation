@@ -1,9 +1,11 @@
 # Import necessary music21 classes
 from music21 import converter, note, stream, midi
 from music21.tempo import MetronomeMark
+import music21
 import glob
 import pickle as pkl
 import os
+from fractions import Fraction
 
 PARSED_DATA_PATH   = "events_parsed_data/"
 OUTPUT_MIDI_PATH = "evt_output/"
@@ -47,6 +49,8 @@ def parse_monophonic_music(parsed_data_path, seq_len):
             if delta > 0:
                 # If there is a gap, insert a TIME_SHIFT representing the rest or sustain duration
                 timeline.append(f"TIME_SHIFT({delta})")
+                if "TIME_SHIFT({delta})" == "TIME_SHIFT(1/3)": 
+                    raise ValueError("Unexpected TIME_SHIFT value, check the input data.")
             # Append the current event (NOTE_ON or NOTE_OFF)
             timeline.append(event)
             # Update last_time to the current event's time
@@ -82,6 +86,7 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
         music21.stream.Stream containing the reconstructed notes.
     """
     s = stream.Stream()
+    s.append(music21.instrument.Violoncello())
     # s.append(MetronomeMark(number=tempo_bpm))
 
     current_time = 0.0
@@ -91,7 +96,7 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
     for evt in events:
         if evt.startswith('TIME_SHIFT'):
             # Extract the delta and advance time
-            delta = float(evt[evt.find('(')+1:evt.find(')')])
+            delta = float(Fraction(evt[evt.find('(')+1:evt.find(')')]))
             current_time += delta
         elif evt.startswith('NOTE_ON'):
             pitch = evt[evt.find('(')+1:evt.find(')')]
@@ -107,6 +112,9 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
                 n.offset = start
                 n.quarterLength = dur
                 s.append(n)
+        elif evt == 'START':
+            # Handle the start of the timeline, if needed
+            current_time = 0.0
 
     # Sort notes by offset and write MIDI if requested
     s.sort()

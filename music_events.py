@@ -35,6 +35,7 @@ PARSE_MIDI_FILES    = True
 PARSED_DATA_PATH   = "events_parsed_data/"
 OUTPUT_MIDI_PATH = "evt_output/"
 DATASET_REPETITIONS = 1
+SHOW_MIDI = False
 
 SEQ_LEN         = 200
 EMBEDDING_DIM   = 256
@@ -43,7 +44,7 @@ N_HEADS         = 5
 DROPOUT_RATE    = 0.3
 FEED_FORWARD_DIM= 512
 
-LOAD_MODEL      = False  # <-- switch on/off loading a pre‐trained model
+LOAD_MODEL      = True  # <-- switch on/off loading a pre‐trained model
 EPOCHS          = 500
 BATCH_SIZE      = 128
 
@@ -98,6 +99,7 @@ def main():
         notes = load_parsed_files(PARSED_DATA_PATH)
     
     notes_ds, notes_vec, notes_vocab = create_dataset(notes)
+    print(f"Notes vocabulary: {notes_vocab}")
     durs_vocab = []
     seq_ds = notes_ds
 
@@ -212,27 +214,28 @@ def main():
             p = p / np.sum(p)
             return np.random.choice(len(p), p=p), p
 
-        def get_note(self, notes_pred, durs_pred, temperature):
+        def get_note(self, notes_pred, temperature):
             # sample note
             idx_n, _ = 1, None
             while idx_n == 1:
                 idx_n, _ = self.sample_from(notes_pred[0, -1], temperature)
-            n_str = self.index_to_note[idx_n]
+            note = self.index_to_note[idx_n]
 
-            return reconstruct_midi_from_events(n_str, None), idx_n, n_str
+            return idx_n, note
 
-        def generate(self, start_notes, start_durations, max_tokens, temperature):
-            stream = music21.stream.Stream()
-            stream.append(music21.instrument.Violoncello())
+        def generate(self, start_notes, max_tokens, temperature):
+            # stream = music21.stream.Stream()
+            # stream.append(music21.instrument.Violoncello())
+            events = []
 
             tokens_n = [self.note_to_index.get(x, 1) for x in start_notes]
 
             for n in start_notes:
-                note_obj = reconstruct_midi_from_events(n, None)
-                if note_obj is not None:
-                    stream.append(note_obj)
+                # events.append(f"NOTE_ON({n})")
+                events.append(n)
 
-            info, i = [], 0
+            i = 0
+            
             # Pre-allocate the start
             while len(tokens_n) < max_tokens:
                 temp = temperature + (i/max_tokens)*(1.0-temperature)
@@ -241,34 +244,38 @@ def main():
                 # notes_pred = model.predict(x1, verbose=0)
                 # this is presumably faster than predict
                 notes_pred = model(x1, training=False).numpy()
-                durs_pred  = None
+                # durs_pred  = None
 
-                note_obj, idx_n, n_str = self.get_note(
-                    notes_pred, durs_pred, temp
+                idx_n, note = self.get_note(
+                    notes_pred, temp
                 )
-                if note_obj is not None:
-                    stream.append(note_obj)
-
+                events.append(note)
                 tokens_n.append(idx_n)
-                start_notes.append(n_str)
+                start_notes.append(note)
 
-                info.append({
-                    "prompt": [start_notes.copy(), start_durations.copy()],
-                    "midi":   stream,
-                    "chosen_note": (n_str),
-                    "note_probs": notes_pred[0, -1],
-                })
+                # info.append({
+                #     "prompt": [start_notes.copy()],
+                #     "midi":   stream,
+                #     "chosen_note": (note),
+                #     "note_probs": notes_pred[0, -1],
+                # })
                 i += 1
+            # Convert events to a music21 Stream
+            print(events)
+            stream = reconstruct_midi_from_events(
+                events, tempo_bpm=120.0, output_path=OUTPUT_MIDI_PATH
+            )
 
-            return info
+            return stream
 
         def on_epoch_end(self, epoch, logs=None):
             # if epoch % 20 == 0:
-            full = self.generate(["START"], ["0.0"],
+            stream = self.generate(["START"],
                                 max_tokens=GENERATE_LEN,
                                 temperature=0.5)
-            midi = full[-1]["midi"].chordify()
-            midi.show('text')
+            midi = stream.chordify()
+            if SHOW_MIDI:
+                midi.show('text')
             out_fp = os.path.join(OUTPUT_MIDI_PATH, f"epoch-{epoch:04d}.mid")
             midi.write("midi", fp=out_fp)
 
@@ -298,7 +305,7 @@ def main():
 
     # 11. One‐off generation
     final_info = music_generator.generate(
-        ["START"], ["0.0"], max_tokens=50, temperature=0.5
+        ["START"], max_tokens=50, temperature=0.5
     )
     out_stream = final_info[-1]["midi"].chordify()
     out_stream.show()
