@@ -10,7 +10,7 @@ from tensorflow.keras.layers import TextVectorization
 
 # ensure local transformer_utils.py is found first
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-from transformer_utils_events import (
+from transformer_utils import (
     SinePositionEncoding,
 )
 
