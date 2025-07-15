@@ -14,7 +14,7 @@ from transformer_utils import (
     SinePositionEncoding,
 )
 
-from events_data_rep import (
+from events_data_rep_v2 import (
     parse_monophonic_music as parse_midi_files,
     load_parsed_events as load_parsed_files,
     reconstruct_midi_from_events,
@@ -23,9 +23,9 @@ from events_data_rep import (
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 
-gpus = tf.config.list_physical_devices('GPU')
-for gpu in gpus:
-    tf.config.experimental.set_memory_growth(gpu, True)
+# gpus = tf.config.list_physical_devices('GPU')
+# for gpu in gpus:
+#     tf.config.experimental.set_memory_growth(gpu, True)
 
 # (Optional) mixed precision to lower memory footprint
 # mixed_precision.set_global_policy('mixed_float16')
@@ -37,18 +37,18 @@ OUTPUT_MIDI_PATH = "evt_output/"
 DATASET_REPETITIONS = 1
 SHOW_MIDI = False
 
-SEQ_LEN         = 200
+SEQ_LEN         = 400
 EMBEDDING_DIM   = 256
 KEY_DIM         = 256
-N_HEADS         = 5
+N_HEADS         = 7
 DROPOUT_RATE    = 0.3
 FEED_FORWARD_DIM= 512
 
-LOAD_MODEL      = True  # <-- switch on/off loading a pre‐trained model
+LOAD_MODEL      = False  # <-- switch on/off loading a pre‐trained model
 EPOCHS          = 500
 BATCH_SIZE      = 128
 
-GENERATE_LEN    = 400
+GENERATE_LEN    = 600
 
 
 class StringVectorization(TextVectorization):
@@ -89,7 +89,7 @@ def main():
     file_list = glob.glob("./data/bach-cello/*.mid")
     print(f"Found {len(file_list)} MIDI files")
 
-    parser = music21.converter
+    # parser = music21.converter
 
     if PARSE_MIDI_FILES:
         notes = parse_midi_files(
@@ -100,7 +100,6 @@ def main():
     
     notes_ds, notes_vec, notes_vocab = create_dataset(notes)
     print(f"Notes vocabulary: {notes_vocab}")
-    durs_vocab = []
     seq_ds = notes_ds
 
     # 3. Create the Training Set
@@ -184,9 +183,10 @@ def main():
     evt_emb    = TokenAndPositionEmbedding(len(notes_vocab),
                                         EMBEDDING_DIM)(evt_inputs)
     x = evt_emb
-    for i in range(2):
+    for i in range(3):
         x = TransformerBlock(N_HEADS, KEY_DIM, EMBEDDING_DIM,
                             FEED_FORWARD_DIM, name=f"attn{i+1}")(x)
+    x = layers.Dense(len(notes_vocab), activation="softmax")(x)
     evt_out = layers.Dense(len(notes_vocab), activation="softmax")(x)
     model   = models.Model(evt_inputs, evt_out)
     from tensorflow.keras.optimizers import Adam
@@ -202,12 +202,11 @@ def main():
 
     # 9. MusicGenerator callback
     class MusicGenerator(callbacks.Callback):
-        def __init__(self, index_to_note, index_to_duration, top_k=10):
+        def __init__(self, index_to_note, top_k=10):
             super().__init__()
             self.index_to_note     = index_to_note
             self.note_to_index     = {n: i for i, n in enumerate(index_to_note)}
-            self.index_to_duration = index_to_duration
-            self.duration_to_index = {d: i for i, d in enumerate(index_to_duration)}
+            self.top_k = top_k
 
         def sample_from(self, probs, temperature):
             p = probs ** (1/temperature)
@@ -244,7 +243,6 @@ def main():
                 # notes_pred = model.predict(x1, verbose=0)
                 # this is presumably faster than predict
                 notes_pred = model(x1, training=False).numpy()
-                # durs_pred  = None
 
                 idx_n, note = self.get_note(
                     notes_pred, temp
@@ -285,7 +283,7 @@ def main():
         save_weights_only=True, save_freq="epoch"
     )
     tensorboard_cb = callbacks.TensorBoard(log_dir="./logs")
-    music_generator = MusicGenerator(notes_vocab, durs_vocab)
+    music_generator = MusicGenerator(notes_vocab)
 
     # split train/val
     total_batches = len(notes) // BATCH_SIZE

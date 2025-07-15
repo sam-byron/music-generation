@@ -121,3 +121,4 @@ def reconstruct_midi_from_events(events: list, tempo_bpm: float = 120.0, output_
     if output_path:
         s.write('midi', fp=os.path.join(output_path, f"output.mid"))
     return s
+
